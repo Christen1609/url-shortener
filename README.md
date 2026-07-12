@@ -13,23 +13,42 @@ I built this to get hands-on with a few system design ideas that come up constan
 
 ## Architecture
 
+**Write path — `POST /shorten`**
+
 ```
-                 POST /shorten
-                      |
-                      v
-   client ----> Flask app (app/app.py)
-                      |
-        +-------------+--------------+
-        |                            |
-        v                            v
-   Redis (cache)               PostgreSQL (db)
-   - short_code -> long_url    - urls table (source of truth)
-   - rate_limit:<ip> counters  - auto-incrementing id -> base62 short_code
+client --> Flask app --> PostgreSQL (INSERT long_url, get auto id)
+                               |
+                               v
+                    base62-encode id -> short_code
+                               |
+                               v
+                    Redis SET short_code -> long_url
+                               |
+                               v
+                    return { short_url, short_code } to client
 ```
 
-**Write path (`POST /shorten`):** the long URL is inserted into Postgres first, which assigns it an auto-incrementing `id`. That `id` is base62-encoded into a short code (e.g. `1` → `"1"`, `62` → `"10"`), and the `short_code -> long_url` mapping is written into Redis so future reads are fast.
+The long URL is inserted into Postgres first, which assigns it an auto-incrementing `id`. That `id` is base62-encoded into a short code (e.g. `1` → `"1"`, `62` → `"10"`), and the `short_code -> long_url` mapping is written into Redis so future reads are fast.
 
-**Read path (`GET /<short_code>`):** Redis is checked first. On a cache hit, the app redirects immediately without touching Postgres. On a cache miss, the short code is base62-decoded back into the row id, Postgres is queried, and the result is written back into Redis so the next request for that code is a cache hit.
+**Read path — `GET /<short_code>`** (cache-aside)
+
+```
+client --> Flask app --> Redis GET short_code
+                               |
+                    +----------+----------+
+                    | HIT                 | MISS
+                    v                     v
+             return long_url       PostgreSQL SELECT long_url
+             (302 redirect)         (base62-decode short_code -> id)
+                                          |
+                                          v
+                                   Redis SET short_code -> long_url
+                                          |
+                                          v
+                                   return long_url (302 redirect)
+```
+
+Redis is checked first. On a cache hit, the app redirects immediately without touching Postgres. On a cache miss, the short code is base62-decoded back into the row id, Postgres is queried, the result is written back into Redis so the next request for that code is a cache hit, and then the client is redirected.
 
 ## Redis cache
 
