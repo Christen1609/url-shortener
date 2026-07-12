@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+
+# Local-only reference material (full saved webpage dump, not project assets)
+project images/
